@@ -15,7 +15,7 @@ The purpose is to replace top-down scarcity models with hybrid instruction syste
 
 In the OBINexus Bioeconomic model, housing becomes the anchor of dignity and regeneration. The idea is simple but transformative:
 
-> The cost of owning a house should equal the cost of staying in a hostel for a year in the UK.
+> The cost of owning a house MUST be less than or equal the cost of staying in a hostel for THAT year in the UK.
 
 Through directed-instruction finance (DIF) and equity-linked public ledgers, the system automatically calibrates fair cost and ownership pathways. When the system scales, **the collective pays for the home** instead of the individual, mirroring how a hostel is publicly funded for temporary shelter.
 
