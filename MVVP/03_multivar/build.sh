@@ -1,1 +1,1 @@
-gcc -lm  -o build/odts_multivar src/dts_mutlivar.c
+gcc -lm  -o build/odts_multivar src/odts_mutlivar.c
