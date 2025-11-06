@@ -1,122 +1,164 @@
-// odts_multivar.c
-// gcc odts_multivar.c -o odts -lm && ./odts
+// odts_multivar.c – v2.4: Bioeconomic ODTS (C) – Production
+// gcc -O2 -Wall -Wextra src/odts_multivar.c -o build/odts -lm && ./build/odts
 #include <stdio.h>
 #include <math.h>
 #include <stdlib.h>
+#include <string.h>
+#include <time.h>
 
-#define MAX_VARS 5
-#define MAX_ORDER 4
-#define EPS 1e-8
+#define MAX_ITER  50
+#define EPS       1e-12
+#define LAMBDA    0.01
+#define LAMBDA_UP 10.0
+#define LAMBDA_DN 0.1
 
 typedef struct {
-    double x[MAX_VARS];
-    double grad[MAX_VARS];
-    double hessian[MAX_VARS][MAX_VARS];
-    double series[MAX_ORDER + 1];
-    int order;
-    int converged;
+    double x[2];
+    double grad[2];
+    double hessian[2][2];
     double residual;
+    double lambda;
+    int iter;
+    int converged;
+    char status[32];
 } ODTS;
 
-void print_vec(const char* name, double* v, int n) {
-    printf("%s: [", name);
-    for (int i = 0; i < n; i++) printf("%.6f%s", v[i], i<n-1?", ":"");
-    printf("]\n");
+// ---------- f(x,y) ----------
+double f(double x, double y) {
+    return (x-1)*(x-1) + (y-2)*(y-2) + 0.1 * sin(10*x*y);
 }
 
-void print_matrix(const char* name, double m[MAX_VARS][MAX_VARS], int n) {
-    printf("%s:\n", name);
-    for (int i = 0; i < n; i++) {
-        for (int j = 0; j < n; j++) printf(" %.6f", m[i][j]);
-        printf("\n");
+// ---------- Analytic Gradient ----------
+void analytic_gradient(double x, double y, double g[2]) {
+    double xy = 10 * x * y;
+    double c = cos(xy);
+    g[0] = 2*(x-1) + c;
+    g[1] = 2*(y-2) + x * c;
+}
+
+// ---------- Analytic Hessian ----------
+void analytic_hessian(double x, double y, double H[2][2]) {
+    double xy = 10 * x * y;
+    double s = sin(xy), c = cos(xy);
+    H[0][0] = 2 - 10*s;
+    H[0][1] = y * c;
+    H[1][0] = H[0][1];
+    H[1][1] = 2 - x * 10 * s;
+}
+
+// ---------- LM Step ----------
+int lm_step(ODTS *sys) {
+    double x = sys->x[0], y = sys->x[1];
+    analytic_gradient(x, y, sys->grad);
+    analytic_hessian(x, y, sys->hessian);
+
+    // Damping
+    sys->hessian[0][0] += sys->lambda;
+    sys->hessian[1][1] += sys->lambda;
+
+    double a = sys->hessian[0][0], b = sys->hessian[0][1];
+    double c = sys->hessian[1][0], d = sys->hessian[1][1];
+    double det = a*d - b*c;
+
+    if (fabs(det) < EPS) {
+        sys->lambda *= LAMBDA_UP;
+        strcpy(sys->status, "DAMPING_UP");
+        return 0;
     }
-}
 
-// Example: f(x,y) = (x-1)^2 + (y-2)^2 + 0.1*sin(10*x*y) → biological stress function
-double f(double* x) {
-    return pow(x[0]-1, 2) + pow(x[1]-2, 2) + 0.1 * sin(10 * x[0] * x[1]);
-}
+    double dx = (d * sys->grad[0] - b * sys->grad[1]) / det;
+    double dy = (a * sys->grad[1] - c * sys->grad[0]) / det;
 
-void compute_gradient(double* x, double* grad, int n) {
-    double h = 1e-6;
-    double f0 = f(x);
-    for (int i = 0; i < n; i++) {
-        double x_save = x[i];
-        x[i] += h;
-        grad[i] = (f(x) - f0) / h;
-        x[i] = x_save;
+    sys->x[0] -= dx;
+    sys->x[1] -= dy;
+
+    double f_old = f(x, y);
+    double f_new = f(sys->x[0], sys->x[1]);
+
+    if (f_new < f_old - 1e-10) {
+        sys->lambda *= LAMBDA_DN;
+    } else {
+        sys->lambda *= LAMBDA_UP;
     }
+    return 1;
 }
 
-void compute_hessian(double* x, double hsn[MAX_VARS][MAX_VARS], int n) {
-    double grad_p[MAX_VARS], grad_m[MAX_VARS], grad0[MAX_VARS];
-    double h = 1e-5;
-    compute_gradient(x, grad0, n);
-    for (int i = 0; i < n; i++) {
-        double x_save = x[i];
-        x[i] += h; compute_gradient(x, grad_p, n);
-        x[i] -= 2*h; compute_gradient(x, grad_m, n);
-        x[i] = x_save;
-        for (int j = 0; j < n; j++) {
-            hsn[i][j] = (grad_p[j] - 2*grad0[j] + grad_m[j]) / (h*h);
-        }
-    }
+// ---------- CSV Log ----------
+void log_csv(ODTS *sys, FILE *fp) {
+    fprintf(fp, "%d,%.10f,%.10f,%.6e,%.6e,%.6e,%s,%.6f\n",
+            sys->iter, sys->x[0], sys->x[1],
+            sys->grad[0], sys->grad[1], sys->residual,
+            sys->status, sys->lambda);
 }
 
-int check_convergence(ODTS* sys, int n) {
-    double norm = 0;
-    for (int i = 0; i < n; i++) norm += sys->grad[i] * sys->grad[i];
-    sys->residual = sqrt(norm);
-
-    // Series: check if higher-order terms → 0
-    sys->series[sys->order] = sys->residual;
-    if (sys->order > 1) {
-        double ratio = fabs(sys->series[sys->order] / sys->series[sys->order-1]);
-        sys->converged = (ratio < 0.9 && sys->residual < 1e-4);
-        return sys->converged;
-    }
-    return 0;
+// ---------- JSON Audit ----------
+void log_json(ODTS *sys) {
+    FILE *fp = fopen("odts_audit_c.json", "w");
+    time_t now = time(NULL);
+    fprintf(fp, "{\n");
+    fprintf(fp, "  \"model\": \"ODTS v2.4 Bioeconomic C\",\n");
+    fprintf(fp, "  \"timestamp\": \"%s\",\n", ctime(&now));
+    fprintf(fp, "  \"status\": \"%s\",\n", sys->status);
+    fprintf(fp, "  \"optimal\": [%.10f, %.10f],\n", sys->x[0], sys->x[1]);
+    fprintf(fp, "  \"f_opt\": %.6e\n", f(sys->x[0], sys->x[1]));
+    fprintf(fp, "  \"iterations\": %d\n", sys->iter);
+    fprintf(fp, "}\n");
+    fclose(fp);
 }
 
-int main() {
-    ODTS sys = {0};
-    sys.x[0] = 0.5; sys.x[1] = 1.0;  // starting guess: survival reserve stress point
-    sys.order = 0;
+// ---------- Engine ----------
+int run_odts(ODTS *sys) {
+    sys->iter = 0;
+    sys->lambda = LAMBDA;
+    sys->converged = 0;
+    strcpy(sys->status, "RUNNING");
 
-    printf("=== ODTS v2.0 – Multivariable Convergence Engine ===\n");
-    printf("Function: f(x,y) = (x-1)^2 + (y-2)^2 + 0.1*sin(10xy)\n");
-    printf("Goal: Minimize stress → converge to (1,2)\n\n");
+    FILE *csv = fopen("odts_trace_c.csv", "w");
+    fprintf(csv, "iter,x,y,gx,gy,res,status,lambda\n");
+    log_csv(sys, csv);
 
-    for (int iter = 0; iter < 20; iter++) {
-        compute_gradient(sys.x, sys.grad, 2);
-        compute_hessian(sys.x, sys.hessian, 2);
-        sys.order++;
+    for (sys->iter = 1; sys->iter <= MAX_ITER; sys->iter++) {
+        lm_step(sys);
 
-        if (check_convergence(&sys, 2)) {
-            printf("CONVERGED at iteration %d\n", iter);
+        sys->residual = sqrt(sys->grad[0]*sys->grad[0] + sys->grad[1]*sys->grad[1]);
+
+        if (sys->residual < EPS) {
+            strcpy(sys->status, "CONVERGED");
+            sys->converged = 1;
             break;
         }
 
-        // Newton step: x = x - H⁻¹∇f
-        double det = sys.hessian[0][0]*sys.hessian[1][1] - sys.hessian[0][1]*sys.hessian[1][0];
-        if (fabs(det) < EPS) { printf("DIVERGED: Hessian singular\n"); return 1; }
+        log_csv(sys, csv);
 
-        double dx = -(sys.hessian[1][1]*sys.grad[0] - sys.hessian[0][1]*sys.grad[1]) / det;
-        double dy = -(sys.hessian[0][0]*sys.grad[1] - sys.hessian[1][0]*sys.grad[0]) / det;
-
-        sys.x[0] += dx; sys.x[1] += dy;
-
-        printf("Iter %2d | x=(%.6f, %.6f) | ∇f=", iter, sys.x[0], sys.x[1]);
-        print_vec("", sys.grad, 2);
-        printf("           | residual=%.2e | order=%d\n", sys.residual, sys.order);
+        if (sys->lambda > 1e8) {
+            strcpy(sys->status, "OVERDAMPED");
+            break;
+        }
     }
 
-    printf("\nFINAL STATE:\n");
-    print_vec("x*", sys.x, 2);
-    print_vec("∇f", sys.grad, 2);
-    printf("f(x*) = %.6f\n", f(sys.x));
-    printf("Series residual: %.2e → %s\n", sys.residual, sys.converged ? "CONVERGED" : "DIVERGED");
-    printf("================================================\n");
+    log_csv(sys, csv);
+    fclose(csv);
+    log_json(sys);
 
+    return sys->converged;
+}
+
+// ---------- Main ----------
+int main() {
+    ODTS sys = {0};
+    sys.x[0] = 0.3;
+    sys.x[1] = 0.8;
+
+    printf("=== ODTS v2.4 – Bioeconomic Engine (C) ===\n");
+    printf("Start: (%.3f, %.3f)\n\n", sys.x[0], sys.x[1]);
+
+    if (run_odts(&sys)) {
+        printf("CONVERGED @ iter %d → x* = (%.10f, %.10f)\n", sys.iter, sys.x[0], sys.x[1]);
+    } else {
+        printf("DIVERGED: %s (lambda=%.2e)\n", sys.status, sys.lambda);
+    }
+
+    printf("Final f* = %.6e\n", f(sys.x[0], sys.x[1]));
+    printf("Audit: odts_trace_c.csv + odts_audit_c.json\n");
     return 0;
 }

@@ -1,0 +1,9 @@
+{
+  "model": "ODTS v2.4 Bioeconomic C",
+  "timestamp": "Thu Nov  6 16:04:00 2025
+",
+  "status": "RUNNING",
+  "optimal": [2.9032035769, 148.8591226612],
+  "f_opt": 2.157113e+04
+  "iterations": 51
+}
